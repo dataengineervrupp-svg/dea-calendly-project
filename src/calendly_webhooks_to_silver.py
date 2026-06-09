@@ -1,0 +1,138 @@
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import (
+    col,
+    current_timestamp,
+    input_file_name,
+    regexp_extract,
+    to_timestamp,
+    regexp_replace,
+    lower
+)
+from pathlib import Path
+
+spark = (
+    SparkSession.builder
+    .appName("calendly_webhooks_silver")
+    .getOrCreate()
+)
+
+# RAW_PATH = "s3://calendly-project-467875655273-us-east-1-an/raw/calendly_webhooks/"
+
+json_files = [
+    str(p.resolve()).replace("\\", "/")
+    for p in Path("data").glob("*.json")
+]
+
+# print(json_files)
+
+# SILVER_PATH = "s3://calendly-project-467875655273-us-east-1-an/silver/calendly_events/"
+
+
+df_raw = (
+    spark.read
+    .option("multiLine", "true")
+    .option("recursiveFileLookup", "true")
+    .json(json_files)
+)
+
+# df_raw.printSchema()
+# df_raw.show(truncate=False)
+
+# df_raw.select(
+#     col("event").alias("webhook_event_type"),
+#     col("payload.event").alias("payload_event"),
+#     col("payload.uri").alias("invitee_uri")
+# ).show(truncate=False)
+
+df_silver = (
+    df_raw
+    .withColumn("raw_file_path", input_file_name())
+    .withColumn("processed_at", current_timestamp())
+
+    # Top-level webhook metadata
+    .withColumn("webhook_event_type", col("event"))
+    .withColumn(
+        "webhook_created_at",
+        to_timestamp(
+            regexp_replace(col("created_at"), r"\s+", ""),
+            "yyyy-MM-dd'T'HH:mm:ss.SSSSSS'Z'"
+        )
+    )
+    .withColumn("webhook_created_by", col("created_by"))
+
+    # Scheduled event fields
+    .withColumn("event_uri", col("payload.event"))
+    .withColumn(
+        "event_id",
+        regexp_extract(col("payload.event"), r"/scheduled_events/([^/?]+)", 1)
+    )
+    .withColumn("event_start_time", to_timestamp(col("payload.scheduled_event.start_time")))
+    .withColumn("event_end_time", to_timestamp(col("payload.scheduled_event.end_time")))
+    .withColumn("event_name", col("payload.scheduled_event.name"))
+    .withColumn("event_status", col("payload.scheduled_event.status"))
+    .withColumn(
+        "event_type_code",
+        regexp_extract(col("payload.scheduled_event.event_type"), r"/event_types/([^/?]+)", 1)
+    )
+
+    # Invitee fields
+    # .withColumn("invitee_uri", col("payload.invitee.uri"))
+    # .withColumn(
+    #     "invitee_id",
+    #     regexp_extract(col("payload.invitee.uri"), r"/scheduled_events/[^/]+/invitees/([^/?]+)", 1)
+    # )
+    .withColumn("invitee_email", col("payload.email"))
+    .withColumn("invitee_first_name", col("payload.first_name"))
+    .withColumn("invitee_last_name", col("payload.last_name"))
+    .withColumn("invitee_name", col("payload.name"))
+    .withColumn("invitee_name_safe", lower(regexp_replace(col("invitee_name"), r"\s+", "_")))
+
+    # Tracking / attribution fields
+    .withColumn("tracking_utm_source", col("payload.tracking.utm_source"))
+    .withColumn("tracking_utm_medium", col("payload.tracking.utm_medium"))
+    .withColumn("tracking_utm_campaign", col("payload.tracking.utm_campaign"))
+    .withColumn("tracking_utm_content", col("payload.tracking.utm_content"))
+    .withColumn("tracking_utm_term", col("payload.tracking.utm_term"))
+
+    # Select clean silver columns
+    .select(
+        "event_id",
+        "event_uri",
+        "webhook_event_type",
+        "webhook_created_at",
+        "event_name",
+        "event_status",
+        "event_start_time",
+        "event_end_time",
+        "event_type_code",
+        # "invitee_id",
+        # "invitee_uri",
+        "invitee_email",
+        "invitee_name",
+        "invitee_name_safe",
+        "invitee_first_name",
+        "invitee_last_name",
+        "tracking_utm_source",
+        "tracking_utm_medium",
+        "tracking_utm_campaign",
+        "tracking_utm_content",
+        "tracking_utm_term",
+        "raw_file_path",
+        "processed_at",
+    )
+    .dropDuplicates(["event_id", "invitee_name", "webhook_event_type"])
+)
+
+# df_silver.write.format("delta").mode("overwrite").save(SILVER_PATH)
+
+# df_silver.printSchema()
+# df_silver.show(truncate=False)
+df_silver.select(
+    col('event_id'),
+    col("invitee_name_safe"),
+    col("event_type_code")
+).show(truncate=False)
+
+# df_silver.groupby('webhook_event_type').count().show(truncate=False)
+print('raw table rows:', df_raw.count())
+print('silver table rows:', df_silver.count())
