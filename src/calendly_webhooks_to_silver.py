@@ -88,12 +88,7 @@ def main():
             regexp_extract(col("payload.scheduled_event.event_type"), r"/event_types/([^/?]+)", 1)
         )
 
-        # Invitee fields
-        # .withColumn("invitee_uri", col("payload.invitee.uri"))
-        # .withColumn(
-        #     "invitee_id",
-        #     regexp_extract(col("payload.invitee.uri"), r"/scheduled_events/[^/]+/invitees/([^/?]+)", 1)
-        # )
+        # Invitee Fields
         .withColumn("invitee_email", col("payload.email"))
         .withColumn("invitee_first_name", col("payload.first_name"))
         .withColumn("invitee_last_name", col("payload.last_name"))
