@@ -39,5 +39,5 @@ jobs:
 
       - name: Upload scripts to S3
         run: |
-          aws s3 cp src/calendly_webhooks_to_silver.py s3://calendly-project-467875655273-us-east-1-an/scripts
+          aws s3 cp src/calendly_webhooks_to_silver.py s3://calendly-project-467875655273-us-east-1-an/scripts/calendly_webhooks_to_silver.py
           
