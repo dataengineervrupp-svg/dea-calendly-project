@@ -15,7 +15,7 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--raw-path", required=True)
     parser.add_argument("--silver-path", required=True)
-    parser.add_argument("--location", default="local")
+    parser.add_argument("--location", action="store_true")
     return parser.parse_args()
 
 def main():
@@ -24,29 +24,36 @@ def main():
     SILVER_PATH = args.silver_path
     run_location = args.location
     print(args)
+    if run_location:
+        spark = (
+            SparkSession.builder
+            .appName("calendly_webhooks_to_silver")
+            .getOrCreate()
+        )
+        print('run_location exists, running local version')
+    else:
+        spark = (
+            SparkSession.builder
+            .appName("calendly_webhooks_to_silver")
+            .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
+            .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
+            .getOrCreate()
+        )
+        print(f'no run_location, preparing to save to {SILVER_PATH}')
 
-    spark = (
-        SparkSession.builder
-        .appName("calendly_webhooks_silver")
-        .getOrCreate()
-    )
-
-    # RAW_PATH = "s3://calendly-project-467875655273-us-east-1-an/raw/calendly_webhooks/"
-    if run_location == "local":
+    if run_location:
         json_files = [
             str(p.resolve()).replace("\\", "/")
             for p in Path(RAW_PATH).glob("*.json")
         ]
-
-    # SILVER_PATH = "s3://calendly-project-467875655273-us-east-1-an/silver/calendly_events/"
-
-
+    
     df_raw = (
         spark.read
         .option("multiLine", "true")
         .option("recursiveFileLookup", "true")
         .json(json_files)
     )
+    print('raw table rows:', df_raw.count())
 
     # df_raw.printSchema()
     # df_raw.show(truncate=False)
@@ -113,8 +120,6 @@ def main():
             "event_start_time",
             "event_end_time",
             "event_type_code",
-            # "invitee_id",
-            # "invitee_uri",
             "invitee_email",
             "invitee_name",
             "invitee_name_safe",
@@ -131,18 +136,27 @@ def main():
         .dropDuplicates(["event_id", "invitee_name", "webhook_event_type"])
     )
 
-    # df_silver.write.format("delta").mode("overwrite").save(SILVER_PATH)
-
+    if run_location:
+        print('local run - no silver data saved. showing partial table')
+        df_silver.select(
+            col('event_id'),
+            col("invitee_name_safe"),
+            col("event_type_code")
+        ).show(truncate=False)
+    else:
+        (
+            df_silver.write
+            .mode("overwrite")
+            .parquet(SILVER_PATH)
+        )
+        print(f'silver data saved to {SILVER_PATH}')
     # df_silver.printSchema()
     # df_silver.show(truncate=False)
-    df_silver.select(
-        col('event_id'),
-        col("invitee_name_safe"),
-        col("event_type_code")
-    ).show(truncate=False)
+    
+    
 
     # df_silver.groupby('webhook_event_type').count().show(truncate=False)
-    print('raw table rows:', df_raw.count())
+
     print('silver table rows:', df_silver.count())
 
 if __name__ == "__main__":
