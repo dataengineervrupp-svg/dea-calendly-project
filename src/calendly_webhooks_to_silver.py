@@ -51,7 +51,7 @@ def main():
         spark.read
         .option("multiLine", "true")
         .option("recursiveFileLookup", "true")
-        .json(json_files)
+        .json(json_files if run_location else RAW_PATH)
     )
     print('raw table rows:', df_raw.count())
 
