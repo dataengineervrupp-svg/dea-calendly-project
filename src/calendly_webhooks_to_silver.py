@@ -1,12 +1,18 @@
-from pyspark.sql import SparkSession
+from pyspark.sql import SparkSession, Window
 from pyspark.sql.functions import (
     col,
+    coalesce,
+    concat_ws,
     current_timestamp,
     input_file_name,
+    lit,
+    lower,
     regexp_extract,
-    to_timestamp,
     regexp_replace,
-    lower
+    row_number,
+    sha2,
+    to_timestamp,
+    trim,
 )
 from pathlib import Path
 import argparse
@@ -16,7 +22,21 @@ def parse_args():
     parser.add_argument("--raw-path", required=True)
     parser.add_argument("--silver-path", required=True)
     parser.add_argument("--location", action="store_true")
+    # parser.add_argument("--write_mode", default="overwrite", required=False)
     return parser.parse_args()
+
+def delta_table_exists(spark: SparkSession, path: str) -> bool:
+    """Return True when the path contains a Delta transaction log."""
+    jvm = spark._jvm
+    hadoop_conf = spark._jsc.hadoopConfiguration()
+    filesystem = jvm.org.apache.hadoop.fs.FileSystem.get(
+        jvm.java.net.URI.create(path),
+        hadoop_conf,
+    )
+    delta_log_path = jvm.org.apache.hadoop.fs.Path(
+        f"{path.rstrip('/')}/_delta_log"
+    )
+    return filesystem.exists(delta_log_path)
 
 def main():
     args = parse_args()
@@ -133,7 +153,48 @@ def main():
             "raw_file_path",
             "processed_at",
         )
-        .dropDuplicates(["event_id", "invitee_name", "webhook_event_type"])
+        # .dropDuplicates(["event_id", "invitee_name", "webhook_event_type"])
+    )
+
+    # add unique key for each json file
+    df_silver = (
+        df_silver
+        .withColumn(
+            "invitee_identity",
+            coalesce(
+                lower(trim(col("invitee_email"))),
+                lower(trim(col("invitee_name_safe"))),
+                lit("unknown"),
+            )
+        )
+        .withColumn(
+            "webhook_key",
+            sha2(
+                concat_ws(
+                    "||",
+                    col("event_id"),
+                    col("webhook_event_type"),
+                    col("invitee_identity"),
+                ),
+                256,
+            )
+        )
+    )
+    # de-duplicate logic using most recent records
+    source_window = (
+        Window
+        .partitionBy("webhook_key")
+        .orderBy(
+            col("webhook_created_at").desc_nulls_last(),
+            col("processed_at").desc(),
+        )
+    )
+
+    df_silver = (
+        df_silver
+        .withColumn("_source_rank", row_number().over(source_window))
+        .filter(col("_source_rank") == 1)
+        .drop("_source_rank")
     )
 
     if run_location:
@@ -141,23 +202,43 @@ def main():
         df_silver.select(
             col('event_id'),
             col("invitee_name_safe"),
-            col("event_type_code")
+            col("event_type_code"),
+            col("invitee_identity"),
+            col("webhook_key")
         ).show(truncate=False)
     else:
-        (
-            df_silver.write
-            .mode("overwrite")
-            .parquet(SILVER_PATH)
-        )
-        print(f'silver data saved to {SILVER_PATH}')
+
+        if not delta_table_exists(spark, SILVER_PATH):
+            print(f"Creating new Delta table at {SILVER_PATH}")
+            (
+                df_silver.write
+                .format("delta")
+                .mode("overwrite")
+                .save(SILVER_PATH)
+            )
+        else:
+            print(f"Merging records into existing Delta table at {SILVER_PATH}")
+            df_silver.createOrReplaceTempView("calendly_webhook_updates")
+            spark.sql(
+                f"""
+                MERGE INTO delta.`{SILVER_PATH}` AS target
+                USING calendly_webhook_updates AS source
+                ON target.webhook_key = source.webhook_key
+                WHEN MATCHED THEN UPDATE SET *
+                WHEN NOT MATCHED THEN INSERT *
+                """
+            )
+            print(f'silver data saved to {SILVER_PATH}')
+            print(
+                "Silver Delta row count:",
+                spark.read.format("delta").load(SILVER_PATH).count(),
+            )
     # df_silver.printSchema()
     # df_silver.show(truncate=False)
     
-    
-
     # df_silver.groupby('webhook_event_type').count().show(truncate=False)
-
     print('silver table rows:', df_silver.count())
+    spark.stop()
 
 if __name__ == "__main__":
     main()
