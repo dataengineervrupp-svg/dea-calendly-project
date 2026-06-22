@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 
-from sections import daily_calls_by_channel, cost_per_booking, bookings_trend, channel_leaderboard, booking_time_patterns
+from sections import daily_calls_by_channel, cost_per_booking, bookings_trend, channel_leaderboard, booking_time_patterns, employee_meeting_load
 
 GOLD_DAILY_CHANNEL_PERFORMANCE_PATH = (
     "s3://calendly-project-467875655273-us-east-1-an/"
@@ -11,13 +11,16 @@ GOLD_BOOKING_TIME_PATTERNS_PATH = (
     "s3://calendly-project-467875655273-us-east-1-an/"
     "gold/dashboard_exports/booking_time_patterns/"
 )
+GOLD_EMPLOYEE_MEETING_LOAD_PATH = (
+    "s3://calendly-project-467875655273-us-east-1-an/"
+    "gold/dashboard_exports/employee_meeting_load/"
+)
 
 st.set_page_config(
     page_title="Calendly Channel Performance Dashboard",
     page_icon="📅",
     layout="wide",
 )
-
 
 @st.cache_data(ttl=300)
 def load_daily_channel_performance(path: str) -> pd.DataFrame:
@@ -48,6 +51,25 @@ def load_booking_time_patterns(path: str) -> pd.DataFrame:
 
     if "booking_date" in df.columns:
         df["booking_date"] = pd.to_datetime(df["booking_date"])
+
+    return df
+
+@st.cache_data(ttl=300)
+def load_employee_meeting_load(path: str) -> pd.DataFrame:
+    df = pd.read_parquet(path)
+
+    if "week_start_date" in df.columns:
+        df["week_start_date"] = pd.to_datetime(
+            df["week_start_date"],
+            errors="coerce",
+        )
+
+    if "user_email" in df.columns:
+        df["user_email"] = (
+            df["user_email"]
+            .fillna("unknown")
+            .replace("", "unknown")
+        )
 
     return df
 
@@ -149,6 +171,36 @@ def apply_filters_to_time_patterns(
 
     return filtered_df
 
+def apply_filters_to_employee_meeting_load(
+    df: pd.DataFrame,
+    filter_state: dict,
+) -> pd.DataFrame:
+    filtered_df = df.copy()
+
+    if filtered_df.empty:
+        return filtered_df
+
+    if "week_start_date" in filtered_df.columns:
+        filtered_df["week_start_date"] = pd.to_datetime(
+            filtered_df["week_start_date"],
+            errors="coerce",
+        )
+
+    start_date = filter_state.get("start_date")
+    end_date = filter_state.get("end_date")
+
+    if (
+        start_date is not None
+        and end_date is not None
+        and "week_start_date" in filtered_df.columns
+    ):
+        filtered_df = filtered_df[
+            (filtered_df["week_start_date"].dt.date >= start_date)
+            & (filtered_df["week_start_date"].dt.date <= end_date)
+        ]
+
+    return filtered_df
+
 def render_kpis(df: pd.DataFrame) -> None:
     st.subheader("Overview")
 
@@ -178,7 +230,7 @@ def render_kpis(df: pd.DataFrame) -> None:
         col4.metric("Date range", "N/A")
 
 
-def render_empty_dashboard_sections(df: pd.DataFrame, time_patterns_df: pd.DataFrame) -> None:
+def render_empty_dashboard_sections(df: pd.DataFrame, time_patterns_df: pd.DataFrame, employee_meeting_load_df: pd.DataFrame) -> None:
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
         [
             "1. Daily calls by channel",
@@ -216,8 +268,9 @@ def render_empty_dashboard_sections(df: pd.DataFrame, time_patterns_df: pd.DataF
         booking_time_patterns.render(time_patterns_df)
 
     with tab6:
-        st.header("Meeting load per employee")
-        st.info("Placeholder: this will use a future employee meeting-load gold table.")
+        # st.header("Meeting load per employee")
+        # st.info("Placeholder: this will use a future employee meeting-load gold table.")
+        employee_meeting_load.render(employee_meeting_load_df)
 
 
 def main() -> None:
@@ -247,12 +300,19 @@ def main() -> None:
         time_patterns_df,
         filter_state,
     )
+    employee_meeting_load_df = load_employee_meeting_load(
+        GOLD_EMPLOYEE_MEETING_LOAD_PATH
+    )
+    filtered_employee_meeting_load_df = apply_filters_to_employee_meeting_load(
+        employee_meeting_load_df,
+        filter_state,
+    )
 
     render_kpis(filtered_df)
 
     st.divider()
 
-    render_empty_dashboard_sections(filtered_df, filtered_time_patterns_df)
+    render_empty_dashboard_sections(filtered_df, filtered_time_patterns_df, filtered_employee_meeting_load_df)
 
     with st.expander("Preview filtered data"):
         st.dataframe(filtered_df, width="stretch")
