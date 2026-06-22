@@ -11,6 +11,8 @@ from pyspark.sql.functions import (
     round as spark_round,
     to_date,
     trim,
+    lit,
+    when
 )
 from pyspark.sql.types import DecimalType
 
@@ -87,6 +89,22 @@ def main():
             ),
         )
         .withColumn(
+            "event_type_code",
+            when(
+                col("channel") == "facebook_paid_ads",
+                lit("d639ecd3-8718-4068-955a-436b10d72c78"),
+            )
+            .when(
+                col("channel") == "youtube_paid_ads",
+                lit("dbb4ec50-38cd-4bcd-bbff-efb7b5a6f098"),
+            )
+            .when(
+                col("channel") == "tiktok_paid_ads",
+                lit("bb339e98-7a67-4af2-b584-8dbf95564312"),
+            )
+            .otherwise(lit("unknown")),
+        )
+        .withColumn(
             "spend",
             spark_round(
                 col("spend").cast(DecimalType(12, 2)),
@@ -97,14 +115,12 @@ def main():
         .select(
             "spend_date",
             "channel",
+            "event_type_code",
             "spend",
             "raw_file_path",
             "raw_file_modified_at",
             "processed_at",
         )
-        .filter(col("spend_date").isNotNull())
-        .filter(col("channel").isNotNull())
-        .filter(col("spend").isNotNull())
     )
 
     # Each daily file contains a rolling 30-day snapshot.

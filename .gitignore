@@ -1,8 +1,5 @@
 # my own stuff
 data/*
-sample_close_event.json
-sample_calendly_event.json
-sample_calendly_webhook.json
 pyspark_test.py
 src/test_get_marketing_data.py
 

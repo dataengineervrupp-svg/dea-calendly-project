@@ -6,7 +6,7 @@ spark = (
     .getOrCreate()
 )
 
-RAW_PATH = "data/webhooks/areal_webhook.json"
+RAW_PATH = "data/webhooks/real_webhook.json"
 
 
 df_raw = (
