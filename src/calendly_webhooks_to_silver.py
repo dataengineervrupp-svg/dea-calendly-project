@@ -106,6 +106,7 @@ def main():
             "event_id",
             regexp_extract(col("payload.event"), r"/scheduled_events/([^/?]+)", 1)
         )
+        .withColumn("user_email", col("payload.scheduled_event.event_memberships")[0].user_email)
         .withColumn("event_start_time", to_timestamp(col("payload.scheduled_event.start_time")))
         .withColumn("event_end_time", to_timestamp(col("payload.scheduled_event.end_time")))
         .withColumn("event_name", col("payload.scheduled_event.name"))
@@ -131,6 +132,7 @@ def main():
 
         # Select clean silver columns
         .select(
+            "user_email",
             "event_id",
             "event_uri",
             "webhook_event_type",
@@ -200,11 +202,12 @@ def main():
     if run_location:
         print('local run - no silver data saved. showing partial table')
         df_silver.select(
+            col('user_email'),
             col('event_id'),
             col("invitee_name_safe"),
             col("event_type_code"),
-            col("invitee_identity"),
-            col("webhook_key")
+            # col("invitee_identity"),
+            # col("webhook_key")
         ).show(truncate=False)
     else:
 
