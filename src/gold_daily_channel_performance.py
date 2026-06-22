@@ -248,8 +248,16 @@ def main():
         .option("overwriteSchema", "true")
         .save(gold_path)
     )
-
     print(f"Wrote gold table to {gold_path}")
+
+    dashboard_export_path = "s3://calendly-project-467875655273-us-east-1-an/gold/dashboard_exports/daily_channel_performance/"
+    (
+        gold_df.write
+        .mode("overwrite")
+        .parquet(dashboard_export_path)
+    )
+    print(f"Wrote parquet table to {dashboard_export_path}")
+
 
     spark.stop()
 
