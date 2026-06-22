@@ -50,6 +50,21 @@ def main():
         .getOrCreate()
     )
 
+    # set manually for testing, but overwrite below with actual args
+    webhooks_silver_path = (
+        "s3://calendly-project-467875655273-us-east-1-an/"
+        "silver/webhooks_delta/"
+    )
+
+    marketing_silver_path = (
+        "s3://calendly-project-467875655273-us-east-1-an/"
+        "silver/marketing_spend_delta/"
+    )
+
+    gold_path = (
+        "s3://calendly-project-467875655273-us-east-1-an/"
+        "gold/daily_channel_performance_delta/"
+    )
     webhooks_silver_path = args.webhooks_silver_path.rstrip("/")
     marketing_silver_path = args.marketing_silver_path.rstrip("/")
     gold_path = args.gold_path.rstrip("/")
@@ -59,13 +74,24 @@ def main():
         .format("delta")
         .load(webhooks_silver_path)
     )
-    print('webhooks_df read successfully')
+    
     marketing_df = (
         spark.read
         .format("parquet")
         .load(marketing_silver_path)
     )
-
+    marketing_df = marketing_df.filter(col("spend_date") >= lit("2026-06-09").cast("date"))
+    marketing_df = marketing_df.drop_duplicates()
+    
+    dates_table = (
+        marketing_df
+        .filter(col("spend_date") >= lit("2026-06-09").cast("date"))
+        .select('spend_date').groupby('spend_date').count().sort('spend_date', ascending=True)
+    )
+    print('dataframes read successfully')
+    print('lowest marketing_df dates:')
+    dates_table.show(5, truncate=False)
+    
     # Bookings by date + channel/event type.
     # The marketing silver table maps channel -> webhook_event_type,
     # so webhook_event_type is the join key.
@@ -76,15 +102,22 @@ def main():
             to_date(col("webhook_created_at")),
         )
         .filter(col("booking_date").isNotNull())
-        .filter(col("webhook_event_type").isNotNull())
+        .filter(col("event_type_code").isNotNull())
         .groupBy(
             "booking_date",
-            "webhook_event_type",
+            "event_type_code",
         )
         .agg(
             count(lit(1)).alias("bookings_count"),
         )
     )
+    booking_dates_table = (
+        bookings_daily
+        .select('booking_date').groupby('booking_date').count()
+        .sort('booking_date', ascending=True)
+    )
+    print('booking dates mins:')
+    booking_dates_table.show(5, truncate=False)
 
     # Spend by date + channel/event type.
     # In theory silver marketing is already one row per spend_date/channel,
@@ -93,11 +126,11 @@ def main():
         marketing_df
         .filter(col("spend_date").isNotNull())
         .filter(col("channel").isNotNull())
-        .filter(col("webhook_event_type").isNotNull())
+        .filter(col("event_type_code").isNotNull())
         .groupBy(
             "spend_date",
             "channel",
-            "webhook_event_type",
+            "event_type_code",
         )
         .agg(
             spark_sum(col("spend")).alias("marketing_spend"),
@@ -115,8 +148,8 @@ def main():
                 col("spend.spend_date") == col("bookings.booking_date")
             )
             & (
-                col("spend.webhook_event_type")
-                == col("bookings.webhook_event_type")
+                col("spend.event_type_code")
+                == col("bookings.event_type_code")
             ),
             how="full_outer",
         )
@@ -131,11 +164,11 @@ def main():
             col("spend.channel").alias("channel"),
 
             when(
-                col("bookings.webhook_event_type").isNotNull(),
-                col("bookings.webhook_event_type"),
+                col("bookings.event_type_code").isNotNull(),
+                col("bookings.event_type_code"),
             )
-            .otherwise(col("spend.webhook_event_type"))
-            .alias("webhook_event_type"),
+            .otherwise(col("spend.event_type_code"))
+            .alias("event_type_code"),
 
             when(
                 col("bookings.bookings_count").isNotNull(),
@@ -191,7 +224,7 @@ def main():
             "week_start_date",
             "month_start_date",
             "channel",
-            "webhook_event_type",
+            "event_type_code",
             "bookings_count",
             "marketing_spend",
             "cost_per_booking",
@@ -204,9 +237,9 @@ def main():
     print("Gold row count:", gold_df.count())
 
     gold_df.orderBy(
-        col("performance_date").desc(),
+        col("performance_date"),
         col("channel"),
-    ).show(50, truncate=False)
+    ).show(5, truncate=False)
 
     (
         gold_df.write
